@@ -16,7 +16,6 @@ def get_db_connection():
 # -------------------- LOGIN --------------------
 @app.route("/login", methods=["POST"])
 def login():
-    # Detect if request contains JSON or form data
     if request.is_json:
         data = request.get_json()
         correo = data.get("correo")
@@ -37,7 +36,6 @@ def login():
     if usuario["password"] != password:
         return jsonify({"error": "Contraseña incorrecta"}), 401
 
-    # If request came from a web form, redirect to the appropriate dashboard
     if not request.is_json:
         tipoU = usuario["tipoUsuario"]
         idU = usuario["Id"]
@@ -86,7 +84,6 @@ def buscar_oferta(idU, idOferta):
 
 @app.route("/delegado/<int:idU>/oferta/crear", methods=["POST"])
 def crear_oferta(idU):
-    # Support both JSON and form data
     if request.is_json:
         data = request.get_json()
         titulo = data.get("titulo")
@@ -116,7 +113,6 @@ def crear_oferta(idU):
     oferta_id = cursor.lastrowid
     conn.commit()
 
-    # Fetch the created offer
     new_oferta = cursor.execute(
         "SELECT * FROM oferta WHERE ofertaId = ?", (oferta_id,)
     ).fetchone()
@@ -522,7 +518,7 @@ def actualizar_contrasena(id):
     cursor = conn.cursor()
     cursor.execute("UPDATE usuario SET password = ? WHERE Id = ?", (password, id))
     conn.commit()
-    # Optionally return user info without password
+    
     user = cursor.execute(
         "SELECT Id, nombre, correo, numero, tipoUsuario FROM usuario WHERE Id = ?", (id,)
     ).fetchone()
