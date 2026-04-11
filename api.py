@@ -692,5 +692,78 @@ def ver_chats(idU):
              
     return jsonify(resultado)
 
+
+@app.route("/chats/<int:idU>/<int:idChat>", methods=["GET"])
+def obtener_chat(idU, idChat):
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    chats = obtener_chats_usuario(idU)
+    if not chats:
+        return jsonify({"Error": "El usuario no tiene chats"}), 404
+    
+    chatMongo = ver_chat(idChat)
+    if not chatMongo:
+        return jsonify({"Error": "No existe dicho chat"}), 404
+
+    idChatB = chatMongo.get("id_chat")
+    
+    chatB = None
+    for n in range(len(chats)):
+        if chats[n].get("id_chat") == idChatB:
+            chatB = chats[n]
+            break
+
+    if not chatB:
+        return jsonify({"Error": "El chat no pertenece a este usuario"}), 404
+    
+    nombreCandidato = cursor.execute('''
+        SELECT usuario.nombre FROM usuario 
+        JOIN candidato ON usuario.Id = candidato.Id 
+        WHERE candidato.candidatoId = ?
+    ''', (chatB.get("id_candidato"),)).fetchone()
+
+    nombreDelegado = cursor.execute('''
+        SELECT usuario.nombre FROM usuario 
+        JOIN delegado ON usuario.Id = delegado.Id 
+        WHERE delegado.delegadoId = ?
+    ''', (chatB.get("id_delegado"),)).fetchone()
+
+    mensajes = chatB.get("mensajes", [])
+
+    if not mensajes:
+        return jsonify({
+            "Candidato": nombreCandidato[0] if nombreCandidato else None,
+            "Delegado": nombreDelegado[0] if nombreDelegado else None,
+            "Mensajes": "No hay mensajes en este chat aun"
+        })
+    
+    infoMensaje = []
+
+    for mensaje in mensajes:
+        idEmisor = mensaje.get("id_emisor")
+
+        nombreEmisor = (
+            nombreCandidato[0] if idEmisor == chatB.get("id_candidato")
+            else nombreDelegado[0]
+        )
+
+        timestamp = mensaje.get("timestamp")
+        fecha = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S") if timestamp else None
+
+        infoMensaje.append({
+            "Enviado por": nombreEmisor,
+            "Fecha": fecha.isoformat() if fecha else None,
+            "Contenido": mensaje.get("contenido")
+        })
+        
+    return jsonify({
+        "Candidato": nombreCandidato[0] if nombreCandidato else None,
+        "Delegado": nombreDelegado[0] if nombreDelegado else None,
+        "Mensajes": infoMensaje
+    })
+    
+    
 if __name__ == "__main__":
     app.run(debug=True)
