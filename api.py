@@ -4,11 +4,13 @@ from flask_cors import CORS
 import os
 from pymongo import MongoClient
 # Se importan los chats del archivo que hizo la conexion a mongoDB para mantener el codigo de la API más simple
-from mongo_chat import chats
+from mongo_chat import chats, eliminar_chat_mensaje
 from mongo_chat import obtener_chats_usuario
 from mongo_chat import ver_chat
 from mongo_chat import enviar_mensaje
-from mongo_chat import crear_chat
+from mongo_chat import crear_chat_con_mensaje
+from mongo_chat import eliminar_chat
+from mongo_chat import client
 from datetime import datetime
 
 app = Flask(__name__)
@@ -643,6 +645,7 @@ def cancelar_postulacion(postulacion_id):
     conn.close()
     return jsonify(postulacion_dict)
 
+# Metodos de la base de datos no relacional
 @app.route("/chats/<int:idU>", methods = ["GET"])
 def ver_chats(idU):
     conn = get_db_connection()
@@ -691,7 +694,6 @@ def ver_chats(idU):
         )
              
     return jsonify(resultado)
-
 
 @app.route("/chats/<int:idU>/<int:idChat>", methods=["GET"])
 def obtener_chat(idU, idChat):
@@ -763,7 +765,213 @@ def obtener_chat(idU, idChat):
         "Delegado": nombreDelegado[0] if nombreDelegado else None,
         "Mensajes": infoMensaje
     })
+
+@app.route("/chats/<int:idU>/>int:idChat>/<int:idMensaje>", methods = ["PUT"])
+def editar_mensaje(idU, idChat, idMensaje):
+    chatss = obtener_chats_usuario(idU)
+    if not chatss:
+        return jsonify ({"Error": "El usuario no tiene chats activos"}), 404
     
+    chat = None
+    for c in chatss:
+        if c.get("id_chat") == idChat:
+            chat = c
+            break
+            
+    if not chat:
+        return jsonify ({"Error": "No se encontro el chat"}), 404
+    
+    
+    contenido = request.get_json()
+    if not contenido:
+        return ({"Error": "No se encontro el contenido"}), 404
+    
+    mensaje = None
+    for m in chat.get("mensajes"):
+        if m.get("id_mensaje") == idMensaje: 
+            mensaje = m
+            break
+            
+    if not mensaje:
+        return jsonify ({"Error": "No se encontro el mensaje"}), 404
+        
+    
+    if not mensaje.get("id_emisor") == idU:
+        return jsonify({"Error": "No se puede editar el mensaje porque no lo envio usted"}), 400
+    
+    mensaje["contenido"] = contenido.get("contenido")
+    chats.update_one(
+        {"id_chat": idChat, "mensajes.id_mensaje": idMensaje},
+        {"$set": {"mensajes.$.contenido": mensaje["contenido"]}}
+    )
+    
+    return jsonify ({"Contenido": mensaje.get("contenido")})
+
+@app.route("/chats/<int:id_chat>/mensaje", methods=["POST"])
+def enviar_mensaje_chat(id_chat):
+    """
+    Envía un mensaje a un chat existente.
+    
+    Espera JSON con:
+    {
+        "id_usuario": 123,
+        "mensaje": "Texto del mensaje"
+    }
+    """
+    data = request.get_json()
+    
+    id_usuario = data.get("id_usuario")
+    mensaje_texto = data.get("mensaje")
+    
+    if not id_usuario or not mensaje_texto:
+        return jsonify({"error": "Datos incompletos. Requiere: id_usuario, mensaje"}), 400
+    
+    # Validar que el chat existe
+    chat = ver_chat(id_chat)
+    if not chat:
+        return jsonify({"error": "Chat no encontrado"}), 404
+    
+    # Validar que el usuario pertenece al chat
+    if id_usuario != chat.get("id_delegado") and id_usuario != chat.get("id_candidato"):
+        return jsonify({"error": "El usuario no tiene permiso para enviar mensajes en este chat"}), 403
+    
+    # Enviar el mensaje
+    resultado = enviar_mensaje(id_chat, id_usuario, mensaje_texto)
+    
+    if not resultado:
+        return jsonify({"error": "Error al enviar el mensaje"}), 500
+    
+    # Obtener el chat actualizado
+    chat_actualizado = ver_chat(id_chat)
+    
+    return jsonify({
+        "message": "Mensaje enviado exitosamente",
+        "chat": chat_actualizado
+    }), 201
+    
+@app.route("/chats/<int:idU>", methods=["POST"])
+def crear_chats(idU):
+    """
+    Crea un nuevo chat entre un delegado y candidato con el primer mensaje.
+    
+    Espera JSON con:
+    {
+        "id_delegado": 123,
+        "id_candidato": 456,
+        "mensaje": "Texto del primer mensaje"
+    }
+    El usuario que hace la request (idU) debe ser delegado o candidato.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Validar que el usuario existe
+    nombreU = cursor.execute(
+        "SELECT nombre FROM usuario WHERE Id = ?", (idU,)
+    ).fetchone()
+    if not nombreU:
+        conn.close()
+        return jsonify({"error": "Usuario no encontrado"}), 404
+    
+    data = request.get_json()
+    
+    id_delegado = data.get("id_delegado")
+    id_candidato = data.get("id_candidato")
+    mensaje_texto = data.get("mensaje")
+    
+    # Validar que todos los datos estén presentes
+    if not all([id_delegado, id_candidato, mensaje_texto]):
+        conn.close()
+        return jsonify({"error": "Datos incompletos. Requiere: id_delegado, id_candidato, mensaje"}), 400
+    
+    # Validar que el usuario que hace la request sea delegado o candidato en el chat
+    if idU != id_delegado and idU != id_candidato:
+        conn.close()
+        return jsonify({"error": "El usuario no está involucrado en este chat"}), 403
+    
+    # Validar que el delegado existe
+    delegado = cursor.execute(
+        "SELECT delegadoId FROM delegado WHERE delegadoId = ?", (id_delegado,)
+    ).fetchone()
+    if not delegado:
+        conn.close()
+        return jsonify({"error": "Delegado no encontrado"}), 404
+    
+    # Validar que el candidato existe
+    candidato = cursor.execute(
+        "SELECT candidatoId FROM candidato WHERE candidatoId = ?", (id_candidato,)
+    ).fetchone()
+    if not candidato:
+        conn.close()
+        return jsonify({"error": "Candidato no encontrado"}), 404
+    
+    conn.close()
+    
+    # Crear el chat con el primer mensaje
+    nuevo_chat = crear_chat_con_mensaje(id_delegado, id_candidato, idU, mensaje_texto)
+    
+    return jsonify({
+        "message": "Chat creado exitosamente",
+        "chat": nuevo_chat
+    }), 201
+
+@app.route("/chats/<int:idU>/<int:id_chat>/<int:id_mensaje>", methods=["DELETE"])
+def ruta_eliminar_mensaje(idU, id_chat, id_mensaje):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Validar usuario en SQL
+    usuario = cursor.execute("SELECT nombre FROM usuario WHERE Id = ?", (idU,)).fetchone()
+    conn.close()
+
+    if not usuario:
+        return jsonify({"error": "Usuario no encontrado"}), 404
+    
+    # Validar que el chat existe y pertenece al usuario
+    chat = ver_chat(id_chat)
+    if not chat:
+        conn.close()
+        return jsonify({"error": "Chat no encontrado"}), 404
+
+    if chat.get("id_candidato") != idU:
+        conn.close()
+        return jsonify({"error": "No tienes permiso para eliminar este chat"}), 403
+
+    # Llamar a la lógica de borrado
+    exito = eliminar_chat_mensaje(id_chat, idU, id_mensaje)
+
+    if exito:
+        return jsonify({"message": "Mensaje eliminado exitosamente"}), 200
+    else:
+        return jsonify({"error": "No se pudo eliminar el mensaje. Verifica si eres el autor o si el mensaje existe."}), 403
+
+@app.route("/chats/<int:idU>/<int:id_chat>", methods=["DELETE"])
+def eliminar_chats(idU, id_chat):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Validar que el usuario existe
+    nombreU = cursor.execute(
+        "SELECT nombre FROM usuario WHERE Id = ?", (idU,)
+    ).fetchone()
+    if not nombreU:
+        conn.close()
+        return jsonify({"error": "Usuario no encontrado"}), 404
+
+    # Validar que el chat existe y pertenece al usuario
+    chat = ver_chat(id_chat)
+    if not chat:
+        conn.close()
+        return jsonify({"error": "Chat no encontrado"}), 404
+
+    if chat.get("id_candidato") != idU:
+        conn.close()
+        return jsonify({"error": "No tienes permiso para eliminar este chat"}), 403
+
+    eliminar_chat(id_chat)
+    conn.close()
+    return jsonify({"message": "Chat eliminado exitosamente"})
+
     
 if __name__ == "__main__":
     app.run(debug=True)
